@@ -4,7 +4,9 @@ import (
 	"deliverymanagement/internal/model"
 	"deliverymanagement/internal/repo"
 	"deliverymanagement/pkg/rabbitmq"
+	"deliverymanagement/pkg/ws"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -19,6 +21,7 @@ import (
 type DeliveryHandler struct {
 	Deliveries repo.DeliveryRepository
 	Publisher  rabbitmq.Publisher
+	WSHub      *ws.Hub
 }
 
 func (h *DeliveryHandler) CreateDelivery(c *gin.Context) {
@@ -139,6 +142,7 @@ func (h *DeliveryHandler) AssignDelivery(c *gin.Context) {
 
 type ScanEventHandler struct {
 	ScanEvents repo.ScanEventRepository
+	WSHub     *ws.Hub
 }
 
 // Middleware for courier or warehouse roles
@@ -183,14 +187,21 @@ func (h *ScanEventHandler) CreateScanEvent(c *gin.Context) {
 		return
 	}
 	// Broadcast to WebSocket clients for this delivery
-	hub.broadcast(fmt.Sprint(event.DeliveryID), map[string]interface{}{
-		"event":       "scan.updated",
-		"delivery_id": event.DeliveryID,
-		"event_type":  event.EventType,
-		"location":    event.Location,
-		"timestamp":   event.Timestamp,
-	})
+	if h.WSHub != nil {
+		h.WSHub.Publish(fmt.Sprint(event.DeliveryID), mapToJSON(map[string]interface{}{
+			"event":       "scan.updated",
+			"delivery_id": event.DeliveryID,
+			"event_type":  event.EventType,
+			"location":    event.Location,
+			"timestamp":   event.Timestamp,
+		}))
+	}
 	c.JSON(http.StatusOK, event)
+}
+
+func mapToJSON(m map[string]interface{}) []byte {
+	b, _ := json.Marshal(m)
+	return b
 }
 
 func (h *DeliveryHandler) ExportDeliveries(c *gin.Context) {

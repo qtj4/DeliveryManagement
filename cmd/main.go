@@ -27,13 +27,16 @@ func main() {
 	permRepo := repo.NewInMemoryPermissionRepo()
 	rolePermRepo := repo.NewInMemoryRolePermissionRepo()
 	auditRepo := repo.NewInMemoryAuditLogRepo()
+	publisher, _ := rabbitmq.New(os.Getenv("RABBITMQ_URL"))
+	redisClient := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	hub := ws.NewHub(redisClient)
+
 	authHandler := &handler.AuthHandler{Users: userRepo}
-	deliveryHandler := &handler.DeliveryHandler{Deliveries: deliveryRepo}
-	scanEventHandler := &handler.ScanEventHandler{ScanEvents: scanEventRepo}
+	deliveryHandler := &handler.DeliveryHandler{Deliveries: deliveryRepo, Publisher: publisher, WSHub: hub}
+	scanEventHandler := &handler.ScanEventHandler{ScanEvents: scanEventRepo, WSHub: hub}
 	damageReportHandler := &handler.DamageReportHandler{DamageReports: damageReportRepo}
 	rbacHandler := &handler.RBACHandler{Roles: roleRepo, Perms: permRepo, RolePerms: rolePermRepo, Audit: auditRepo}
 	userAdminHandler := &handler.UserAdminHandler{Users: userRepo}
-	publisher, _ := rabbitmq.New(os.Getenv("RABBITMQ_URL"))
 	authFlowHandler := &handler.AuthFlowHandler{Users: userRepo, Publisher: publisher}
 	fileHandler := &handler.FileHandler{DamageReports: damageReportRepo}
 	notificationRepo := repo.NewInMemoryNotificationRepo()
@@ -59,7 +62,7 @@ func main() {
 		deliveries.GET("/export", deliveryHandler.ExportDeliveries)
 	}
 
-	r.POST("/api/scan", handler.JWTAuthMiddleware([]byte("supersecret")), handler.CourierOrWarehouseOnly(), scanEventHandler.CreateScanEvent)
+	r.POST("/api/scan", scanEventHandler.CreateScanEvent)
 	r.POST("/api/damage-report", handler.JWTAuthMiddleware([]byte("supersecret")), handler.CourierOrWarehouseOnly(), damageReportHandler.CreateDamageReport)
 
 	r.GET("/health", func(c *gin.Context) {
@@ -85,10 +88,6 @@ func main() {
 	}
 
 	r.GET("/files/:filename", handler.JWTAuthMiddleware([]byte("supersecret")), fileHandler.ServeFile)
-
-	redisClient := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	hub := ws.NewHub(redisClient)
-	r.GET("/ws/track/:deliveryID", handler.WebSocketHandler(hub))
 
 	r.GET("/api/admin/analytics/summary", analyticsHandler.Summary)
 	r.GET("/api/admin/analytics/by-courier", analyticsHandler.ByCourier)

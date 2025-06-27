@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"yourapp/model"
-	"yourapp/repo"
-	"yourapp/ws"
+	"deliverymanagement/internal/model"
+	"deliverymanagement/internal/repo"
+	"deliverymanagement/pkg/ws"
 
 	"github.com/gin-gonic/gin"
 )
@@ -45,7 +45,7 @@ func (h *AnalyticsHandler) Summary(c *gin.Context) {
 // GET /api/admin/analytics/by-courier
 func (h *AnalyticsHandler) ByCourier(c *gin.Context) {
 	deliveries, _ := h.Deliveries.ListDeliveries()
-	courierStats := map[uint64]int{}
+	courierStats := map[uint]int{}
 	for _, d := range deliveries {
 		courierStats[d.CourierID]++
 	}
