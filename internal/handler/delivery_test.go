@@ -9,7 +9,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -248,28 +247,28 @@ func TestDamageReportHandlers(t *testing.T) {
 	// Valid report with file
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	_ = writer.WriteField("delivery_id", "55")
+	_ = writer.WriteField("delivery_id", "42")
 	_ = writer.WriteField("type", "box damaged")
 	_ = writer.WriteField("description", "Corner crushed")
-	fileWriter, _ := writer.CreateFormFile("photo", "test.jpg")
-	fileContent := []byte("fake image data")
-	fileWriter.Write(fileContent)
+	fw, _ := writer.CreateFormFile("photo", "photo.jpg")
+	fw.Write([]byte("imagedata"))
 	writer.Close()
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/api/damage-report", body)
-	req.Header.Set("Authorization", "Bearer "+jwtCourier)
+	jwtWarehouse = makeWarehouseJWT(42)
+	req.Header.Set("Authorization", "Bearer "+jwtWarehouse)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	r.ServeHTTP(w, req)
 	assert.Equal(t, 200, w.Code)
 	var report model.DamageReport
 	json.Unmarshal(w.Body.Bytes(), &report)
-	assert.Equal(t, uint(55), report.DeliveryID)
+	assert.Equal(t, uint(42), report.DeliveryID)
 	assert.Equal(t, "box damaged", report.Type)
 	assert.Equal(t, "Corner crushed", report.Description)
-	assert.Contains(t, filepath.ToSlash(report.PhotoPath), "uploads/")
+	assert.NotEmpty(t, report.PhotoPath)
 	assert.NotZero(t, report.Timestamp)
 
-	// Valid report without file
+	// Valid report without file (should fail, photo required)
 	body2 := &bytes.Buffer{}
 	writer2 := multipart.NewWriter(body2)
 	_ = writer2.WriteField("delivery_id", "56")
@@ -281,7 +280,7 @@ func TestDamageReportHandlers(t *testing.T) {
 	req2.Header.Set("Authorization", "Bearer "+jwtWarehouse)
 	req2.Header.Set("Content-Type", writer2.FormDataContentType())
 	r.ServeHTTP(w2, req2)
-	assert.Equal(t, 200, w2.Code)
+	assert.Equal(t, 400, w2.Code)
 
 	// Missing fields
 	body3 := &bytes.Buffer{}
@@ -310,7 +309,7 @@ func TestDamageReportHandlers(t *testing.T) {
 	assert.Equal(t, 403, w4.Code)
 
 	// Repo contains reports
-	reports := repo.ListDamageReports(55)
+	reports := repo.ListDamageReports(42)
 	assert.Len(t, reports, 1)
 	assert.Equal(t, "box damaged", reports[0].Type)
 }

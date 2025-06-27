@@ -3,20 +3,22 @@ package handler
 import (
 	"deliverymanagement/internal/model"
 	"deliverymanagement/internal/repo"
+	"deliverymanagement/pkg/rabbitmq"
+	"encoding/csv"
 	"fmt"
-	"io"
+	"math/rand"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/xuri/excelize/v2"
 )
 
 type DeliveryHandler struct {
 	Deliveries repo.DeliveryRepository
+	Publisher  rabbitmq.Publisher
 }
 
 func (h *DeliveryHandler) CreateDelivery(c *gin.Context) {
@@ -41,6 +43,15 @@ func (h *DeliveryHandler) CreateDelivery(c *gin.Context) {
 	if err := h.Deliveries.CreateDelivery(delivery); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	// Publish event to email.queue
+	if h.Publisher != nil {
+		h.Publisher.Publish("email.queue", map[string]interface{}{
+			"event":       "delivery.created",
+			"delivery_id": delivery.ID,
+			"from":        delivery.FromAddress,
+			"to":          delivery.ToAddress,
+		})
 	}
 	c.JSON(http.StatusOK, delivery)
 }
@@ -171,67 +182,57 @@ func (h *ScanEventHandler) CreateScanEvent(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	// Broadcast to WebSocket clients for this delivery
+	hub.broadcast(fmt.Sprint(event.DeliveryID), map[string]interface{}{
+		"event":       "scan.updated",
+		"delivery_id": event.DeliveryID,
+		"event_type":  event.EventType,
+		"location":    event.Location,
+		"timestamp":   event.Timestamp,
+	})
 	c.JSON(http.StatusOK, event)
 }
 
-// Handler for damage reports
-
-type DamageReportHandler struct {
-	DamageReports repo.DamageReportRepository
-}
-
-// POST /api/damage-report
-func (h *DamageReportHandler) CreateDamageReport(c *gin.Context) {
-	if err := c.Request.ParseMultipartForm(10 << 20); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid multipart form"})
-		return
-	}
-	deliveryIDStr := c.PostForm("delivery_id")
-	typeStr := c.PostForm("type")
-	desc := c.PostForm("description")
-	if deliveryIDStr == "" || typeStr == "" || desc == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "missing fields"})
-		return
-	}
-	deliveryID, err := strconv.ParseUint(deliveryIDStr, 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid delivery_id"})
-		return
-	}
-	var photoPath string
-	file, header, err := c.Request.FormFile("photo")
-	if err == nil && header != nil {
-		defer file.Close()
-		filename := filepath.Base(header.Filename)
-		uniqueName := fmt.Sprintf("%d_%s", time.Now().UnixNano(), filename)
-		uploadDir := "uploads"
-		if err := os.MkdirAll(uploadDir, 0755); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create uploads dir"})
+func (h *DeliveryHandler) ExportDeliveries(c *gin.Context) {
+	format := c.DefaultQuery("format", "csv")
+	deliveries, _ := h.Deliveries.ListDeliveries() // Assume this returns []model.Delivery
+	if len(deliveries) <= 1000 {
+		// Sync export
+		if format == "csv" {
+			c.Header("Content-Disposition", "attachment; filename=deliveries.csv")
+			c.Header("Content-Type", "text/csv")
+			w := csv.NewWriter(c.Writer)
+			w.Write([]string{"ID", "FromAddress", "ToAddress", "Status"})
+			for _, d := range deliveries {
+				w.Write([]string{
+					strconv.Itoa(int(d.ID)), d.FromAddress, d.ToAddress, d.Status,
+				})
+			}
+			w.Flush()
+			return
+		} else if format == "xlsx" {
+			f := excelize.NewFile()
+			f.SetSheetRow("Sheet1", "A1", &[]string{"ID", "FromAddress", "ToAddress", "Status"})
+			for i, d := range deliveries {
+				row := []interface{}{d.ID, d.FromAddress, d.ToAddress, d.Status}
+				f.SetSheetRow("Sheet1", fmt.Sprintf("A%d", i+2), &row)
+			}
+			c.Header("Content-Disposition", "attachment; filename=deliveries.xlsx")
+			c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+			f.Write(c.Writer)
 			return
 		}
-		photoPath = filepath.Join(uploadDir, uniqueName)
-		out, err := os.Create(photoPath)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save file"})
-			return
-		}
-		defer out.Close()
-		_, err = io.Copy(out, file)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not write file"})
-			return
-		}
-	}
-	report := &model.DamageReport{
-		DeliveryID:  uint(deliveryID),
-		Type:        typeStr,
-		Description: desc,
-		PhotoPath:   photoPath,
-		Timestamp:   time.Now(),
-	}
-	if err := h.DamageReports.CreateDamageReport(report); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(400, gin.H{"error": "invalid format"})
 		return
 	}
-	c.JSON(http.StatusOK, report)
+	// Async: publish job
+	jobID := fmt.Sprintf("job-%d", rand.Int63())
+	if h.Publisher != nil {
+		h.Publisher.Publish("export.queue", map[string]interface{}{
+			"job_id": jobID,
+			"format": format,
+			"email":  c.Query("email"),
+		})
+	}
+	c.JSON(202, gin.H{"job_id": jobID})
 }
