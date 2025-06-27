@@ -25,4 +25,4 @@ func TestHealth(t *testing.T) {
 
 	assert.Equal(t, 200, w.Code)
 	assert.JSONEq(t, `{"status": "OK"}`, w.Body.String())
-} 
+}

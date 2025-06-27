@@ -12,8 +12,12 @@ func main() {
 
 	userRepo := repo.NewInMemoryUserRepo()
 	deliveryRepo := repo.NewInMemoryDeliveryRepo()
+	scanEventRepo := repo.NewInMemoryScanEventRepo()
+	damageReportRepo := repo.NewInMemoryDamageReportRepo()
 	authHandler := &handler.AuthHandler{Users: userRepo}
 	deliveryHandler := &handler.DeliveryHandler{Deliveries: deliveryRepo}
+	scanEventHandler := &handler.ScanEventHandler{ScanEvents: scanEventRepo}
+	damageReportHandler := &handler.DamageReportHandler{DamageReports: damageReportRepo}
 
 	auth := r.Group("/api/auth")
 	{
@@ -26,7 +30,11 @@ func main() {
 	{
 		deliveries.POST("", deliveryHandler.CreateDelivery)
 		deliveries.GET(":id", deliveryHandler.GetDelivery)
+		deliveries.POST(":id/assign", handler.DispatcherOnly(), deliveryHandler.AssignDelivery)
 	}
+
+	r.POST("/api/scan", handler.JWTAuthMiddleware([]byte("supersecret")), handler.CourierOrWarehouseOnly(), scanEventHandler.CreateScanEvent)
+	r.POST("/api/damage-report", handler.JWTAuthMiddleware([]byte("supersecret")), handler.CourierOrWarehouseOnly(), damageReportHandler.CreateDamageReport)
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "OK"})

@@ -72,3 +72,72 @@ func (r *InMemoryDeliveryRepo) GetDelivery(id uint) (*model.Delivery, error) {
 	}
 	return delivery, nil
 }
+
+// In-memory scan event and tracking log support
+
+type InMemoryScanEventRepo struct {
+	mu       sync.RWMutex
+	events   []*model.ScanEvent
+	nextID   uint
+	tracking map[uint][]*model.ScanEvent // delivery_id -> scan events (tracking log)
+}
+
+func NewInMemoryScanEventRepo() *InMemoryScanEventRepo {
+	return &InMemoryScanEventRepo{
+		events:   []*model.ScanEvent{},
+		nextID:   1,
+		tracking: make(map[uint][]*model.ScanEvent),
+	}
+}
+
+func (r *InMemoryScanEventRepo) CreateScanEvent(event *model.ScanEvent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	event.ID = r.nextID
+	r.nextID++
+	r.events = append(r.events, event)
+	r.tracking[event.DeliveryID] = append(r.tracking[event.DeliveryID], event)
+	return nil
+}
+
+func (r *InMemoryScanEventRepo) ListScanEvents(deliveryID uint) []*model.ScanEvent {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.tracking[deliveryID]
+}
+
+// In-memory damage report support
+
+type InMemoryDamageReportRepo struct {
+	mu      sync.RWMutex
+	reports []*model.DamageReport
+	nextID  uint
+}
+
+func NewInMemoryDamageReportRepo() *InMemoryDamageReportRepo {
+	return &InMemoryDamageReportRepo{
+		reports: []*model.DamageReport{},
+		nextID:  1,
+	}
+}
+
+func (r *InMemoryDamageReportRepo) CreateDamageReport(report *model.DamageReport) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	report.ID = r.nextID
+	r.nextID++
+	r.reports = append(r.reports, report)
+	return nil
+}
+
+func (r *InMemoryDamageReportRepo) ListDamageReports(deliveryID uint) []*model.DamageReport {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var result []*model.DamageReport
+	for _, rep := range r.reports {
+		if rep.DeliveryID == deliveryID {
+			result = append(result, rep)
+		}
+	}
+	return result
+}
